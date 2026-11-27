@@ -6,7 +6,7 @@ const API = {
     /**
      * Make API request
      */
-    async request(method, endpoint, data = null, { redirectOnUnauthorized = true } = {}) {
+    async request(method, endpoint, data = null, { redirectOnUnauthorized = true, raw = false } = {}) {
         const options = {
             method,
             headers: {
@@ -25,6 +25,8 @@ const API = {
         }
 
         const response = await fetch(NodeCastUrl.resolve(`/api${endpoint}`), options);
+        // A raw response is returned as text, for files that must be saved unchanged.
+        if (raw && response.ok) return { text: await response.text() };
 
         let result;
         const contentType = response.headers.get('content-type');
@@ -210,7 +212,7 @@ const API = {
             return query ? `?${query}` : '';
         },
         list: (filters = {}) => API.request('GET', `/auth-log${API.authLog.query(filters)}`),
-        export: (filters = {}) => API.request('GET', `/auth-log/export${API.authLog.query(filters)}`)
+        export: (filters = {}) => API.request('GET', `/auth-log/export${API.authLog.query(filters)}`, null, { raw: true })
     },
 
     // Users (admin only)

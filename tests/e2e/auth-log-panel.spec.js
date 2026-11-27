@@ -53,9 +53,11 @@ async function openPanel(page) {
                     window.exports.push(filters);
                     if (window.exportError) throw new Error(window.exportError);
                     const entries = filters.ip ? all.filter(item => item.ip.startsWith(filters.ip)) : all;
-                    return { schemaVersion: 1, exportedAt: '2026-11-27T09:30:15.123Z', notice: 'Contains personal data.',
+                    const result = { schemaVersion: 1, exportedAt: '2026-11-27T09:30:15.123Z', notice: 'Contains personal data.',
                         filters, order: 'newest_first', total: window.exportTotal ?? entries.length, count: entries.length,
                         limit: 10000, truncated: (window.exportTotal ?? entries.length) > entries.length, entries };
+                    window.lastExportText = `${JSON.stringify(result, null, 2)}\n`;
+                    return { text: window.lastExportText };
                 },
                 list: async filters => {
                     window.requests.push(filters);
@@ -343,7 +345,9 @@ test('export downloads the applied filters as JSON and reports the result', asyn
     await page.locator('#auth-log-export').click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toBe('nodecast-sign-in-activity-2026-11-27T09-30-15Z.json');
-    const content = JSON.parse(await fs.promises.readFile(await download.path(), 'utf8'));
+    const saved = await fs.promises.readFile(await download.path(), 'utf8');
+    expect(saved).toBe(await page.evaluate(() => window.lastExportText), 'The file is saved exactly as received.');
+    const content = JSON.parse(saved);
     expect(content.entries).toHaveLength(1);
     expect(content.entries[0].username).toBe(hostile);
     const sent = await page.evaluate(() => window.exports.at(-1));

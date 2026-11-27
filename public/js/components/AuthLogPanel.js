@@ -366,10 +366,13 @@ class AuthLogPanel {
         if (this.exportButton) this.exportButton.disabled = true;
         if (this.exportStatus) this.exportStatus.textContent = 'Preparing export…';
         try {
-            const result = await this.api.authLog.export(this.exportFilters());
+            const { text } = await this.api.authLog.export(this.exportFilters()) || {};
             if (!this.visible || generation !== this.exportGeneration) return;
+            let result = null;
+            try { result = JSON.parse(text); } catch {}
             if (!result || !Array.isArray(result.entries)) throw new Error('Unexpected export format');
-            const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2) + '\n'], { type: 'application/json' }));
+            // Save the server's text as received rather than re-serializing it.
+            const blobUrl = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
             const link = document.createElement('a');
             link.href = blobUrl;
             link.download = AuthLogPanel.exportFileName(result.exportedAt);

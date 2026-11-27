@@ -208,7 +208,9 @@ async function testExportRoute() {
             assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
             assert.equal(response.headers.get('content-disposition'),
                 'attachment; filename="nodecast-sign-in-activity-2026-11-26T12-00-03Z.json"');
-            const body = await response.json();
+            const text = await response.text();
+            const body = JSON.parse(text);
+            assert.equal(text, `${JSON.stringify(body, null, 2)}\n`, 'The file is sent in its final, readable form.');
             assert.equal(body.count, 1);
             assert.equal(body.entries[0].username, 'ghost');
             assert.deepEqual(calls.at(-1), { from: '2026-11-01T00:00:00Z', to: '2026-12-01T00:00:00Z', account: 'ghost',
