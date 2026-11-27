@@ -832,10 +832,6 @@ const users = {
     });
   },
 
-  /**
-   * Remove the authenticator app. Recovery codes stay valid while passkeys
-   * remain and are removed with the last second factor.
-   */
   async completeMfaOnboarding(id) {
     return mutateUserSecurity(id, user => {
       if (!user.mfaOnboardingPending) return { changed: false, result: false };
@@ -844,6 +840,10 @@ const users = {
     });
   },
 
+  /**
+   * Remove the authenticator app. Recovery codes stay valid while passkeys
+   * remain and are removed with the last second factor.
+   */
   async disableTotp(id, { expectedAuthEpoch } = {}) {
     return mutateUserSecurity(id, user => {
       requireVerifiedAuthEpoch(user, expectedAuthEpoch);
