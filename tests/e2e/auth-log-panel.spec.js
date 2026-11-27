@@ -46,8 +46,17 @@ async function openPanel(page) {
         window.requests = [];
         window.savedSettings = [];
         const all = [first, second];
+        window.exports = [];
         window.API = {
             authLog: {
+                export: async filters => {
+                    window.exports.push(filters);
+                    if (window.exportError) throw new Error(window.exportError);
+                    const entries = filters.ip ? all.filter(item => item.ip.startsWith(filters.ip)) : all;
+                    return { schemaVersion: 1, exportedAt: '2026-11-27T09:30:15.123Z', notice: 'Contains personal data.',
+                        filters, order: 'newest_first', total: window.exportTotal ?? entries.length, count: entries.length,
+                        limit: 10000, truncated: (window.exportTotal ?? entries.length) > entries.length, entries };
+                },
                 list: async filters => {
                     window.requests.push(filters);
                     const matching = filters.ip ? all.filter(item => item.ip.startsWith(filters.ip)) : all;
@@ -317,4 +326,56 @@ test('mixed activity overflow has no invented account or completed-sign-in outco
     await expect(page.locator('.auth-log-details img')).toHaveCount(0);
     expect(await page.evaluate(() => window.__activityXss)).toBeUndefined();
     await expect(page.locator('.auth-log-details dt').filter({ hasText: /^Reasons$/ })).toHaveCount(0);
+});
+
+test('export downloads the applied filters as JSON and reports the result', async ({ page }) => {
+    await openPanel(page);
+    await expect(page.locator('.auth-log-export > p.hint')).toContainText('personal data');
+    await expect(page.locator('.auth-log-export > p.hint')).toContainText('10,000');
+
+    await page.locator('#auth-log-ip').fill('203.0.113.7');
+    await page.locator('#auth-log-filters').getByRole('button', { name: 'Apply' }).click();
+    await expect(page.locator('#auth-log-page')).toHaveText('1–1 of 1');
+    // A field changed without applying it does not silently change the export.
+    await page.locator('#auth-log-account').fill('not-applied');
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('#auth-log-export').click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe('nodecast-sign-in-activity-2026-11-27T09-30-15Z.json');
+    const content = JSON.parse(await fs.promises.readFile(await download.path(), 'utf8'));
+    expect(content.entries).toHaveLength(1);
+    expect(content.entries[0].username).toBe(hostile);
+    const sent = await page.evaluate(() => window.exports.at(-1));
+    expect(sent.ip).toBe('203.0.113.7');
+    expect(sent.account).toBe('');
+    expect(sent).not.toHaveProperty('page');
+    expect(sent).not.toHaveProperty('pageSize');
+    await expect(page.locator('#auth-log-export-status')).toHaveText('Exported 1 entry.');
+    await expect(page.locator('#auth-log-export')).toBeEnabled();
+    expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+
+    await page.evaluate(() => { window.exportTotal = 12345; });
+    const truncatedDownload = page.waitForEvent('download');
+    await page.locator('#auth-log-export').click();
+    await truncatedDownload;
+    const total = await page.evaluate(() => (12345).toLocaleString());
+    await expect(page.locator('#auth-log-export-status')).toHaveText(
+        `Exported the newest 1 of ${total} matching entries. Narrow the date range to export older entries.`);
+
+    await page.evaluate(() => { window.exportError = 'Too many exports. Try again shortly.'; });
+    await page.locator('#auth-log-export').click();
+    await expect(page.locator('#auth-log-export-status')).toHaveText('The export failed: Too many exports. Try again shortly.');
+    await expect(page.locator('#auth-log-export')).toBeEnabled();
+});
+
+test('the export controls fit narrow screens', async ({ page }) => {
+    await openPanel(page);
+    for (const viewport of [{ width: 320, height: 568 }, { width: 874, height: 402 }]) {
+        await page.setViewportSize(viewport);
+        const bounds = await page.locator('#auth-log-export').boundingBox();
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        expect(overflow).toBeLessThanOrEqual(1);
+    }
 });
