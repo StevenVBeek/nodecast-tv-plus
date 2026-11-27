@@ -491,6 +491,8 @@ Repeated activity and failures can be grouped into counted summaries. Successful
 
 The client IP address follows `TRUST_PROXY`: behind a trusted reverse proxy it is the forwarded client address, otherwise the direct connection address. Forwarded headers from untrusted addresses are ignored. Attempted usernames and IP addresses are personal data; choose a retention period that suits your privacy obligations.
 
+**Export JSON** on the same tab downloads the entries that match the applied filters, newest first and up to 10,000 entries per file. The file contains the same fields as the viewer, including account names, attempted usernames and IP addresses, so handle it as personal data. Exporting does not change stored entries or retention settings and does not upload anything.
+
 ## Migrating from upstream NodeCast TV
 
 Downgrading from NodeCast TV Plus back to upstream NodeCast TV after Plus has opened the data volume is not supported. Returning to upstream requires restoring the complete backup created before migration.
