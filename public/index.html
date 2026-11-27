@@ -1211,6 +1211,16 @@
                 <span id="auth-log-page" aria-live="polite"></span>
                 <button type="button" class="btn btn-secondary" id="auth-log-next" disabled>Next</button>
               </div>
+              <div class="auth-log-export">
+                <p class="hint">Export downloads the entries that match the applied filters as a JSON file, newest first,
+                  up to 10,000 entries. The file contains personal data, including account names, attempted usernames and IP
+                  addresses. It is separate from the sanitized Diagnostics support snapshot. Exporting does not change the
+                  log and nothing is uploaded.</p>
+                <div class="auth-log-filter-actions">
+                  <button type="button" class="btn btn-secondary" id="auth-log-export">Export JSON</button>
+                  <span id="auth-log-export-status" class="hint" role="status" aria-live="polite"></span>
+                </div>
+              </div>
             </div>
 
             <div class="settings-section">

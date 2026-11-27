@@ -1717,6 +1717,14 @@ video::cue {
   gap: var(--space-md);
 }
 
+.auth-log-export {
+  margin-top: var(--space-md);
+}
+
+.auth-log-export > .hint {
+  margin: 0 0 var(--space-sm);
+}
+
 .auth-log-retention .form-input.auth-log-number {
   flex: 0 1 auto;
   width: 10rem;

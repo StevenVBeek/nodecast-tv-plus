@@ -201,14 +201,16 @@ const API = {
 
     // Authentication audit log (admin only)
     authLog: {
-        list: (filters = {}) => {
+        query: (filters = {}) => {
             const params = new URLSearchParams();
             for (const [key, value] of Object.entries(filters)) {
                 if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
             }
             const query = params.toString();
-            return API.request('GET', `/auth-log${query ? `?${query}` : ''}`);
-        }
+            return query ? `?${query}` : '';
+        },
+        list: (filters = {}) => API.request('GET', `/auth-log${API.authLog.query(filters)}`),
+        export: (filters = {}) => API.request('GET', `/auth-log/export${API.authLog.query(filters)}`)
     },
 
     // Users (admin only)

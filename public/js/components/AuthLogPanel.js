@@ -40,6 +40,8 @@ class AuthLogPanel {
         this.retentionDays = $('auth-log-retention-days');
         this.maxEntries = $('auth-log-max-entries');
         this.retentionStatus = $('auth-log-retention-status');
+        this.exportButton = $('auth-log-export');
+        this.exportStatus = $('auth-log-export-status');
 
         this.page = 1;
         this.pages = 1;
@@ -47,6 +49,8 @@ class AuthLogPanel {
         this.visible = false;
         this.generation = 0;
         this.retentionGeneration = 0;
+        this.exportGeneration = 0;
+        this.appliedFilters = null;
 
         this.form?.addEventListener('submit', event => {
             event.preventDefault();
@@ -59,6 +63,7 @@ class AuthLogPanel {
             this.load();
         });
         $('auth-log-refresh')?.addEventListener('click', () => this.load());
+        this.exportButton?.addEventListener('click', () => this.exportEntries());
         this.prevButton?.addEventListener('click', () => this.goTo(this.page - 1));
         this.nextButton?.addEventListener('click', () => this.goTo(this.page + 1));
         this.retentionForm?.addEventListener('submit', event => {
@@ -87,6 +92,8 @@ class AuthLogPanel {
         this.visible = false;
         this.generation += 1;
         this.retentionGeneration += 1;
+        this.exportGeneration += 1;
+        if (this.exportButton) this.exportButton.disabled = false;
     }
 
     goTo(page) {
@@ -125,8 +132,10 @@ class AuthLogPanel {
         if (!this.visible) return;
         const generation = ++this.generation;
         this.setStatus('Loading sign-in activity…');
+        const filters = this.filters();
+        this.appliedFilters = filters;
         try {
-            const result = await this.api.authLog.list(this.filters());
+            const result = await this.api.authLog.list(filters);
             if (!this.visible || generation !== this.generation) return;
             this.render(result);
         } catch (error) {
@@ -335,6 +344,51 @@ class AuthLogPanel {
         add('Flow ID', entry.flowId, { hint: 'Shared by the steps of one two-factor sign-in' });
         add('User agent', entry.userAgent, { wide: true });
         return list;
+    }
+
+    /** Filters of the list on screen, without paging, for the export. */
+    exportFilters() {
+        const { page, pageSize, ...filters } = this.appliedFilters || this.filters();
+        return filters;
+    }
+
+    static exportFileName(exportedAt) {
+        const time = new Date(exportedAt);
+        const stamp = Number.isFinite(time.getTime())
+            ? time.toISOString().replace(/\.\d+Z$/, 'Z').replace(/:/g, '-')
+            : 'export';
+        return `nodecast-sign-in-activity-${stamp}.json`;
+    }
+
+    async exportEntries() {
+        if (!this.visible || this.exportButton?.disabled) return;
+        const generation = ++this.exportGeneration;
+        if (this.exportButton) this.exportButton.disabled = true;
+        if (this.exportStatus) this.exportStatus.textContent = 'Preparing export…';
+        try {
+            const result = await this.api.authLog.export(this.exportFilters());
+            if (!this.visible || generation !== this.exportGeneration) return;
+            if (!result || !Array.isArray(result.entries)) throw new Error('Unexpected export format');
+            const blobUrl = URL.createObjectURL(new Blob([JSON.stringify(result, null, 2) + '\n'], { type: 'application/json' }));
+            const link = document.createElement('a');
+            link.href = blobUrl;
+            link.download = AuthLogPanel.exportFileName(result.exportedAt);
+            document.body.append(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+            const count = result.entries.length;
+            if (this.exportStatus) {
+                this.exportStatus.textContent = result.truncated
+                    ? `Exported the newest ${count.toLocaleString()} of ${Number(result.total).toLocaleString()} matching entries. Narrow the date range to export older entries.`
+                    : `Exported ${count.toLocaleString()} ${count === 1 ? 'entry' : 'entries'}.`;
+            }
+        } catch (error) {
+            if (!this.visible || generation !== this.exportGeneration) return;
+            if (this.exportStatus) this.exportStatus.textContent = `The export failed: ${error.message}`;
+        } finally {
+            if (this.visible && generation === this.exportGeneration && this.exportButton) this.exportButton.disabled = false;
+        }
     }
 
     async loadRetention() {
