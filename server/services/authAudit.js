@@ -50,6 +50,10 @@ const MIN_MAX_ENTRIES = 1000;
 const MAX_MAX_ENTRIES = 1000000;
 const MAX_PAGE_SIZE = 100;
 const DEFAULT_PAGE_SIZE = 25;
+const MAX_EXPORT_ENTRIES = 10000;
+const EXPORT_SCHEMA_VERSION = 1;
+const EXPORT_NOTICE = 'Contains personal data: account names, attempted usernames, IP addresses, host names and '
+    + 'user agents. Store and share it accordingly.';
 const PRUNE_EVERY_INSERTS = 200;
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -227,6 +231,11 @@ const USERNAME_KEY_FUNCTION = 'auth_username_key';
 
 function usernameKey(value) {
     return typeof value === 'string' ? value.toLowerCase() : null;
+}
+
+function isoOrNull(time) {
+    const date = new Date(time);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
 function parseTime(value) {
@@ -671,23 +680,27 @@ function createAuthAudit({
     }
 
     /**
-     * Query entries, newest first. Filters: from/to (ISO time or epoch ms),
-     * account (username substring, case-insensitive), ip (prefix), outcome,
-     * event and method.
+     * Build the WHERE clause shared by the viewer and the export. Filters:
+     * from/to (ISO time or epoch ms), account (username substring,
+     * case-insensitive), ip (prefix), outcome, event and method. `applied`
+     * holds the normalized filters that were actually used.
      */
-    function query(filters = {}) {
+    function filterClause(filters = {}) {
         const where = [];
         const params = [];
+        const applied = { from: null, to: null, account: null, ip: null, outcome: null, event: null, method: null };
 
         const from = parseTime(filters.from);
         if (from !== null) {
             where.push('created_at >= ?');
             params.push(from);
+            applied.from = isoOrNull(from) ?? from;
         }
         const to = parseTime(filters.to);
         if (to !== null) {
             where.push('COALESCE(first_at,created_at) <= ?');
             params.push(to);
+            applied.to = isoOrNull(to) ?? to;
         }
         if (from !== null && to !== null && from > to) where.push('0');
 
@@ -695,29 +708,39 @@ function createAuthAudit({
         if (account) {
             where.push(`${USERNAME_KEY_FUNCTION}(username) LIKE ? ESCAPE '\\'`);
             params.push(`%${escapeLike(usernameKey(account))}%`);
+            applied.account = account;
         }
 
         const ip = cleanText(filters.ip, LIMITS.ip);
         if (ip) {
             where.push("(ip LIKE ? ESCAPE '\\' OR peer_ip LIKE ? ESCAPE '\\')");
             params.push(`${escapeLike(ip)}%`, `${escapeLike(ip)}%`);
+            applied.ip = ip;
         }
 
         if (OUTCOMES.includes(filters.outcome)) {
             where.push('outcome = ?');
             params.push(filters.outcome);
+            applied.outcome = filters.outcome;
         }
         if (EVENTS.includes(filters.event)) {
             where.push('(event = ? OR summary_event = ?)');
             params.push(filters.event, filters.event);
+            applied.event = filters.event;
         }
         if (METHODS.includes(filters.method)) {
             where.push('method = ?');
             params.push(filters.method);
+            applied.method = filters.method;
         }
 
+        return { clause: where.length ? `WHERE ${where.join(' AND ')}` : '', params, applied };
+    }
+
+    /** Query entries, newest first, one page at a time. */
+    function query(filters = {}) {
+        const { clause, params } = filterClause(filters);
         const pageSize = clampInteger(filters.pageSize, 1, MAX_PAGE_SIZE, DEFAULT_PAGE_SIZE);
-        const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
         const database = db();
         const total = database.prepare(`SELECT COUNT(*) AS count FROM auth_events ${clause}`).get(...params).count;
         // Clamp to the last page, which can move when entries are pruned.
@@ -738,12 +761,45 @@ function createAuthAudit({
         };
     }
 
+    /**
+     * Export the entries matching the viewer's filters, newest first, in the
+     * same public shape the viewer receives. At most MAX_EXPORT_ENTRIES are
+     * included; `truncated` reports when older matches were left out. Reading
+     * never flushes pending summary counts or changes stored entries.
+     */
+    function exportEntries(filters = {}) {
+        const { clause, params, applied } = filterClause(filters);
+        const database = db();
+        // One read transaction keeps the total and the rows consistent.
+        const { total, rows } = database.transaction(() => ({
+            total: database.prepare(`SELECT COUNT(*) AS count FROM auth_events ${clause}`).get(...params).count,
+            rows: database.prepare(`
+                SELECT * FROM auth_events ${clause}
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+            `).all(...params, MAX_EXPORT_ENTRIES)
+        }))();
+        return {
+            schemaVersion: EXPORT_SCHEMA_VERSION,
+            exportedAt: new Date(now()).toISOString(),
+            notice: EXPORT_NOTICE,
+            filters: applied,
+            order: 'newest_first',
+            total,
+            count: rows.length,
+            limit: MAX_EXPORT_ENTRIES,
+            truncated: total > rows.length,
+            entries: rows.map(toPublicEntry)
+        };
+    }
+
     return Object.freeze({
         record,
         recordRequest,
         createFlowId,
         prune,
         query,
+        exportEntries,
         startMaintenance,
         stopMaintenance,
         flushPending,
@@ -777,6 +833,8 @@ module.exports = {
     MIN_MAX_ENTRIES,
     MAX_MAX_ENTRIES,
     MAX_PAGE_SIZE,
+    MAX_EXPORT_ENTRIES,
+    EXPORT_SCHEMA_VERSION,
     FAILURE_WINDOW_MS,
     SUMMARY_FLUSH_MS,
     FAILURE_LIMITS,
@@ -798,6 +856,7 @@ module.exports = {
     createFlowId: () => getDefault().createFlowId(),
     prune: () => getDefault().prune(),
     query: filters => getDefault().query(filters),
+    exportEntries: filters => getDefault().exportEntries(filters),
     startMaintenance: intervalMs => getDefault().startMaintenance(intervalMs),
     stopMaintenance: () => getDefault().stopMaintenance(),
     flushPending: () => getDefault().flushPending(),
