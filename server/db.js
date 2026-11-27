@@ -601,6 +601,9 @@ function mutateUserSecurity(id, mutator) {
     const outcome = await mutator(user, db);
     if (outcome?.changed !== false) {
       user.updatedAt = new Date().toISOString();
+      // Adding any second factor completes MFA onboarding, so removing that
+      // factor later does not bring the prompt back.
+      if (hasSecondFactor(user)) delete user.mfaOnboardingPending;
     }
     return outcome;
   });
@@ -665,6 +668,9 @@ const users = {
         lastLiveChannel: normalizeLastLiveChannel(userData.lastLiveChannel),
         createdAt: new Date().toISOString()
       };
+      // Only accounts created with this marker are offered MFA onboarding.
+      // Accounts stored before the marker existed are treated as handled.
+      if (userData.mfaOnboardingPending === true) newUser.mfaOnboardingPending = true;
 
       db.users.push(newUser);
       return { result: toPublicUser(newUser) };
@@ -806,6 +812,14 @@ const users = {
    * Remove the authenticator app. Recovery codes stay valid while passkeys
    * remain and are removed with the last second factor.
    */
+  async completeMfaOnboarding(id) {
+    return mutateUserSecurity(id, user => {
+      if (!user.mfaOnboardingPending) return { changed: false, result: false };
+      delete user.mfaOnboardingPending;
+      return { result: true };
+    });
+  },
+
   async disableTotp(id, { expectedAuthEpoch } = {}) {
     return mutateUserSecurity(id, user => {
       requireVerifiedAuthEpoch(user, expectedAuthEpoch);

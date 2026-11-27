@@ -26,9 +26,29 @@ class MfaOnboardingPage {
         this.closeSkipDialog(false);
     }
 
-    continueToEnrollment() {
+    async recordChoice() {
         NodeCastOnboarding.completeMfaPrompt();
-        this.app.pages.account.requestEnrollmentOnNextShow();
+        const user = this.app.currentUser;
+        if (user?.mfaOnboardingPending !== true) return;
+        user.mfaOnboardingPending = false;
+        try {
+            await API.account.completeMfaOnboarding();
+        } catch (err) {
+            // The prompt may return on a later visit, but saving the choice
+            // must never keep the account out of the application.
+            console.warn('[Onboarding] Unable to save the MFA prompt choice:', err.message);
+        }
+    }
+
+    async continueToEnrollment() {
+        if (this.recording) return;
+        this.recording = true;
+        try {
+            await this.recordChoice();
+        } finally {
+            this.recording = false;
+        }
+        this.app.pages.account.requestMethodChoiceOnNextShow();
         this.app.navigateTo('account', true);
     }
 
@@ -44,8 +64,14 @@ class MfaOnboardingPage {
         if (restoreFocus) document.getElementById('mfa-onboarding-skip')?.focus();
     }
 
-    finishSkip() {
-        NodeCastOnboarding.completeMfaPrompt();
+    async finishSkip() {
+        if (this.recording) return;
+        this.recording = true;
+        try {
+            await this.recordChoice();
+        } finally {
+            this.recording = false;
+        }
         this.closeSkipDialog(false);
         this.app.navigateTo('home', true);
     }

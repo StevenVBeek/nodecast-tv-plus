@@ -209,7 +209,8 @@ const API = {
     account: {
         updateSubtitlePreferences: (data) => API.request('PUT', '/auth/me/subtitle-preferences', data),
         updateLiveTvPreferences: (data) => API.request('PUT', '/auth/me/live-tv-preferences', data),
-        updateLastLiveChannel: (data) => API.request('PUT', '/auth/me/last-live-channel', data)
+        updateLastLiveChannel: (data) => API.request('PUT', '/auth/me/last-live-channel', data),
+        completeMfaOnboarding: () => API.request('PUT', '/auth/me/mfa-onboarding', {}, { redirectOnUnauthorized: false })
     },
 
     twoFactor: {

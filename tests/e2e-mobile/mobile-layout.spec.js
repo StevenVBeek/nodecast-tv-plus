@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const { test, expect } = require('@playwright/test');
+const { test, expect, devices } = require('@playwright/test');
 
 const fixtureBaseUrl = 'http://127.0.0.1:3211';
 
@@ -138,6 +138,51 @@ test('mobile Safari can reach page content in portrait and landscape', async ({ 
     await page.reload();
     await expect(page).toHaveURL(/\/#home$/);
     await expect(page.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
+
+    // A local viewer created later receives the same prompt once on its own
+    // first sign-in, and Continue reaches enrollment in both orientations.
+    const viewerPassword = crypto.randomBytes(24).toString('base64url');
+    const createdViewer = await page.request.post('/api/auth/users', {
+        data: {
+            username: 'mobile-new-viewer',
+            password: viewerPassword,
+            passwordConfirmation: viewerPassword,
+            role: 'viewer'
+        }
+    });
+    expect(createdViewer.status()).toBe(201);
+    const signInViewer = async () => {
+        const context = await page.context().browser().newContext({
+            ...devices['iPhone 17 Pro'],
+            baseURL: new URL(page.url()).origin
+        });
+        const viewerPage = await context.newPage();
+        await viewerPage.goto('/login.html');
+        await viewerPage.locator('#username').fill('mobile-new-viewer');
+        await viewerPage.locator('#password').fill(viewerPassword);
+        await viewerPage.getByRole('button', { name: 'Sign In', exact: true }).click();
+        await viewerPage.waitForURL(url => !url.pathname.endsWith('/login.html'));
+        await viewerPage.waitForFunction(() => window.app?.ready);
+        await viewerPage.evaluate(() => window.app.ready);
+        return { context, viewerPage };
+    };
+    const viewerDevice = await signInViewer();
+    await expect(viewerDevice.viewerPage).toHaveURL(/\/#mfa-onboarding$/);
+    await expect(viewerDevice.viewerPage.locator('#page-mfa-onboarding')).toHaveClass(/active/);
+    await viewerDevice.viewerPage.setViewportSize({ width: 874, height: 402 });
+    await scrollToBottom(viewerDevice.viewerPage, '#page-mfa-onboarding');
+    await expectInsideScroller(viewerDevice.viewerPage, '#mfa-onboarding-continue', '#page-mfa-onboarding');
+    await viewerDevice.viewerPage.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(viewerDevice.viewerPage).toHaveURL(/\/#account$/);
+    await viewerDevice.viewerPage.getByRole('button', { name: 'Enable two-factor authentication' }).click();
+    await expect(viewerDevice.viewerPage.locator('#account-enroll-start-form')).toBeVisible();
+    await viewerDevice.viewerPage.setViewportSize({ width: 402, height: 874 });
+    await expect(viewerDevice.viewerPage.locator('#account-enroll-start-form')).toBeVisible();
+    await viewerDevice.context.close();
+    const laterViewerDevice = await signInViewer();
+    await expect(laterViewerDevice.viewerPage.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
+    expect(await laterViewerDevice.viewerPage.evaluate(() => window.app.currentUser.mfaOnboardingPending)).toBe(false);
+    await laterViewerDevice.context.close();
 
     const seriesSource = await page.evaluate(async values => {
         const response = await fetch('/api/sources', {

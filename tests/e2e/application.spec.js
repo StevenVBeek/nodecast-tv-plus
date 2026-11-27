@@ -131,14 +131,17 @@ test('setup, source import, EPG, navigation, and playback work together', async 
     await expect(page.getByText('MFA is recommended but optional.')).toBeVisible();
 
     // An unfinished prompt survives refresh, but Continue replaces it in
-    // history and opens the existing protected enrollment flow.
+    // history and opens Account security, where the available methods are
+    // offered. Passkeys need a host name, so only the authenticator app is
+    // offered at this IP address; the passkey suite covers both choices.
     await page.reload();
     await expect(page).toHaveURL(/\/#mfa-onboarding$/);
     await expect(page.locator('#page-mfa-onboarding')).toHaveClass(/active/);
     await page.getByRole('button', { name: 'Continue', exact: true }).click();
     await expect(page).toHaveURL(/\/#account$/);
     await expect(page.locator('#page-account')).toHaveClass(/active/);
-    await expect(page.locator('#account-enroll-start-form')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Enable two-factor authentication' })).toBeFocused();
+    await expect(page.locator('#two-factor-flow')).toBeHidden();
     expect(await page.evaluate(() => NodeCastOnboarding.isMfaPending())).toBe(false);
 
     // Subtitle preferences live under Settings > Preferences, clearly state
@@ -384,6 +387,32 @@ test('setup, source import, EPG, navigation, and playback work together', async 
     await viewerPage.getByRole('button', { name: 'Sign In', exact: true }).click();
     await viewerPage.waitForURL(url => !url.pathname.endsWith('/login.html'));
     await viewerPage.waitForFunction(() => window.app?.currentUser?.role === 'viewer');
+    // A newly created local viewer is offered MFA once. Skipping explains
+    // where to enable it later, then opens the application normally, and the
+    // choice is stored for the account rather than in this browser.
+    await expect(viewerPage).toHaveURL(/\/#mfa-onboarding$/);
+    await expect(viewerPage.locator('#page-mfa-onboarding')).toHaveClass(/active/);
+    await expect(viewerPage.locator('.mfa-onboarding-intro')).toContainText('protect your account');
+    expect(await viewerPage.evaluate(() => NodeCastOnboarding.isMfaPending())).toBe(false);
+    await viewerPage.reload();
+    await expect(viewerPage.locator('#page-mfa-onboarding')).toHaveClass(/active/);
+    await viewerPage.getByRole('button', { name: 'Skip for now' }).click();
+    await expect(viewerPage.getByRole('dialog', { name: 'Set up MFA later' })).toBeVisible();
+    await viewerPage.getByRole('button', { name: 'Go back' }).click();
+    await expect(viewerPage.locator('#mfa-onboarding-skip-dialog')).toBeHidden();
+    await viewerPage.getByRole('button', { name: 'Skip for now' }).click();
+    await viewerPage.getByRole('button', { name: 'Continue to NodeCast' }).click();
+    await expect(viewerPage).toHaveURL(/\/#home$/);
+    await expect(viewerPage.locator('#page-home')).toHaveClass(/active/);
+    await viewerPage.evaluate(() => localStorage.clear());
+    await viewerPage.evaluate(() => sessionStorage.clear());
+    await viewerPage.reload();
+    await viewerPage.waitForFunction(() => window.app?.ready);
+    await viewerPage.evaluate(() => window.app.ready);
+    await expect(viewerPage).toHaveURL(/\/#home$/);
+    await expect(viewerPage.locator('#page-home')).toHaveClass(/active/);
+    expect(await viewerPage.evaluate(() => window.app.currentUser.mfaOnboardingPending)).toBe(false);
+    await expect(viewerPage.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
     const viewerSettingsLink = viewerPage.locator('.nav-link[data-page="settings"]');
     await expect(viewerSettingsLink).toBeVisible();
     await viewerSettingsLink.click();
@@ -427,6 +456,55 @@ test('setup, source import, EPG, navigation, and playback work together', async 
         }
     });
     await viewerContext.close();
+
+    // A second, separately created account still receives its own prompt.
+    // Continue records the choice and opens the existing enrollment flow;
+    // leaving enrollment unfinished does not bring the prompt back on
+    // refresh, on another device, or through the internal hash.
+    const continuePassword = `${password}-continue`;
+    const continueAccount = await page.request.post('/api/auth/users', {
+        data: {
+            username: 'continue-admin',
+            password: continuePassword,
+            passwordConfirmation: continuePassword,
+            role: 'admin'
+        }
+    });
+    expect(continueAccount.status()).toBe(201);
+    const signInContinueAdmin = async () => {
+        const context = await page.context().browser().newContext({ baseURL: new URL(page.url()).origin });
+        const continuePage = await context.newPage();
+        await continuePage.goto('/login.html');
+        await continuePage.locator('#username').fill('continue-admin');
+        await continuePage.locator('#password').fill(continuePassword);
+        await continuePage.getByRole('button', { name: 'Sign In', exact: true }).click();
+        await continuePage.waitForURL(url => !url.pathname.endsWith('/login.html'));
+        await continuePage.waitForFunction(() => window.app?.currentUser?.username === 'continue-admin');
+        await continuePage.evaluate(() => window.app.ready);
+        return { context, continuePage };
+    };
+    const firstDevice = await signInContinueAdmin();
+    await expect(firstDevice.continuePage).toHaveURL(/\/#mfa-onboarding$/);
+    await expect(firstDevice.continuePage.locator('#page-mfa-onboarding')).toHaveClass(/active/);
+    await firstDevice.continuePage.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(firstDevice.continuePage).toHaveURL(/\/#account$/);
+    await expect(firstDevice.continuePage.locator('#page-account')).toHaveClass(/active/);
+    await firstDevice.continuePage.getByRole('button', { name: 'Enable two-factor authentication' }).click();
+    await expect(firstDevice.continuePage.locator('#account-enroll-start-form')).toBeVisible();
+    await firstDevice.continuePage.reload();
+    await firstDevice.continuePage.waitForFunction(() => window.app?.ready);
+    await firstDevice.continuePage.evaluate(() => window.app.ready);
+    await expect(firstDevice.continuePage).toHaveURL(/\/#account$/);
+    await expect(firstDevice.continuePage.locator('#page-account')).toHaveClass(/active/);
+    await expect(firstDevice.continuePage.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
+    await firstDevice.context.close();
+    const secondDevice = await signInContinueAdmin();
+    await expect(secondDevice.continuePage.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
+    expect(await secondDevice.continuePage.evaluate(() => window.app.currentUser.mfaOnboardingPending)).toBe(false);
+    await secondDevice.continuePage.goto('/?interrupted-enrollment-check=1#mfa-onboarding');
+    await expect.poll(() => secondDevice.continuePage.evaluate(() => window.location.hash)).not.toBe('#mfa-onboarding');
+    await expect(secondDevice.continuePage.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
+    await secondDevice.context.close();
     await expect.poll(() => page.evaluate(() => window.app.currentUser.liveTvPreferences)).toEqual({
         layout: 'grouped',
         order: 'channel-number',

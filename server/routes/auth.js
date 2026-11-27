@@ -6,6 +6,7 @@ const auth = require('../auth');
 const authenticationConfig = require('../config/authentication');
 const { requestBasePath, withBasePath } = require('../config/basePath');
 const twoFactorAuth = require('../services/twoFactorAuth');
+const mfaOnboarding = require('../services/mfaOnboarding');
 const { normalizePreferences } = require('../../public/js/components/SubtitlePreferences');
 const {
     passwordIdentityLimiter,
@@ -297,7 +298,7 @@ router.get('/me', auth.requireAuth, async (req, res) => {
             auth.setAuthCookie(req, res, bearerToken);
         }
 
-        res.json(db.users.toPublic(user));
+        res.json(mfaOnboarding.toOwnAccount(user));
     } catch (err) {
         console.error('Error in /me:', err);
         res.status(500).json({ error: 'Server error' });
@@ -353,6 +354,23 @@ router.put('/me/last-live-channel', auth.requireAuth, async (req, res) => {
 });
 
 /**
+ * Record that the signed-in account has handled its MFA onboarding prompt,
+ * whether it continued to Account security or skipped. Only the caller's own
+ * account can be changed, and repeating the request is harmless.
+ * PUT /api/auth/me/mfa-onboarding
+ */
+router.put('/me/mfa-onboarding', auth.requireAuth, async (req, res) => {
+    try {
+        await db.users.completeMfaOnboarding(req.user.id);
+        res.json({ mfaOnboardingPending: false });
+    } catch (err) {
+        if (err.message === 'User not found') return res.status(404).json({ error: 'User not found' });
+        console.error('Error updating MFA onboarding state:', err.message);
+        res.status(500).json({ error: 'Unable to save MFA onboarding state' });
+    }
+});
+
+/**
  * Get all users (admin only)
  * GET /api/auth/users
  */
@@ -399,7 +417,8 @@ router.post('/users', auth.requireAuth, auth.requireAdmin, async (req, res) => {
         const newUser = await db.users.create({
             username,
             passwordHash,
-            role
+            role,
+            mfaOnboardingPending: true
         });
 
         res.status(201).json(newUser);

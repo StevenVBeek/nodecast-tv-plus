@@ -171,7 +171,10 @@ class App {
 
         // Navigate to an explicit page hash or the configured starting page.
         const hash = window.location.hash.slice(1); // Remove #
-        const mfaOnboardingPending = NodeCastOnboarding.isMfaPending();
+        // The initial administrator is marked in this browser session by the
+        // setup page; accounts created later carry the marker on the server.
+        const mfaOnboardingPending = NodeCastOnboarding.isMfaPending()
+            || this.currentUser?.mfaOnboardingPending === true;
         const requestedPage = hash && this.pages[hash] ? hash : this.navigationSettings.landingPage;
         const autoPlayOnStartup = !mfaOnboardingPending && this.liveTvSettings.autoPlayOnStartup;
         const initialPage = mfaOnboardingPending

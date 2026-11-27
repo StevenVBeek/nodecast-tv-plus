@@ -6,19 +6,27 @@ class AccountPage {
         this.status = null;
         this.passkeys = null;
         this.recoveryCodes = [];
-        this.enrollOnNextShow = false;
+        this.methodChoiceOnNextShow = false;
     }
 
     async show() {
         await this.loadStatus();
-        if (this.enrollOnNextShow) {
-            this.enrollOnNextShow = false;
-            if (!this.status?.enabled && this.status?.canEnroll) this.openEnrollment();
+        if (this.methodChoiceOnNextShow) {
+            this.methodChoiceOnNextShow = false;
+            this.focusMethodChoice();
         }
     }
 
-    requestEnrollmentOnNextShow() {
-        this.enrollOnNextShow = true;
+    // MFA onboarding lands here so the account can choose between the
+    // available methods instead of being sent into one of them.
+    requestMethodChoiceOnNextShow() {
+        this.methodChoiceOnNextShow = true;
+    }
+
+    focusMethodChoice() {
+        const firstMethod = document.querySelector('#passkeys-actions .btn-primary, #two-factor-actions .btn-primary');
+        firstMethod?.focus({ preventScroll: true });
+        document.querySelector('#page-account .account-container')?.scrollIntoView({ block: 'start' });
     }
 
     hide() {

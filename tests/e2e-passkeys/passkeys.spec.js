@@ -1,5 +1,10 @@
 const crypto = require('node:crypto');
 const { test, expect } = require('@playwright/test');
+const OTPAuth = require('otpauth');
+
+// The fixture server allows one first-run setup, so the tests below share
+// the administrator it creates.
+const adminPassword = crypto.randomBytes(24).toString('base64url');
 
 // Chromium's virtual WebAuthn authenticator stands in for Windows Hello,
 // Touch ID or a phone, with automatic user presence and verification.
@@ -38,7 +43,7 @@ test('passkeys can be added, used for sign-in and removed', async ({ page }) => 
     const browserErrors = [];
     page.on('pageerror', error => browserErrors.push(error.message));
 
-    const password = crypto.randomBytes(24).toString('base64url');
+    const password = adminPassword;
     const setup = await page.request.post('api/auth/setup', {
         data: { username: 'passkey-admin', password, passwordConfirmation: password }
     });
@@ -115,6 +120,99 @@ test('passkeys can be added, used for sign-in and removed', async ({ page }) => 
     await page.locator('#password').fill(password);
     await page.getByRole('button', { name: 'Sign In', exact: true }).click();
     await expect(page).toHaveURL(/\/nodecast\/(?:#.*)?$/);
+
+    expect(browserErrors).toEqual([]);
+});
+
+
+async function signInWithPassword(page, username, password) {
+    await page.goto('login.html');
+    await page.locator('#username').fill(username);
+    await page.locator('#password').fill(password);
+    await page.getByRole('button', { name: 'Sign In', exact: true }).click();
+    await page.waitForURL(url => !url.pathname.endsWith('/login.html'));
+    await page.waitForFunction(() => window.app?.ready);
+    await page.evaluate(() => window.app.ready);
+}
+
+// Runs after the test above, which leaves passkey-admin without second factors.
+test('new local accounts choose a passkey or an authenticator app from the MFA prompt', async ({ page, browser, baseURL }) => {
+    const browserErrors = [];
+    page.on('pageerror', error => browserErrors.push(error.message));
+
+    await signInWithPassword(page, 'passkey-admin', adminPassword);
+    await expect(page.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
+    const accounts = {};
+    for (const [username, role] of [['onboarding-passkey', 'viewer'], ['onboarding-authenticator', 'admin']]) {
+        const password = crypto.randomBytes(24).toString('base64url');
+        const created = await page.request.post('api/auth/users', {
+            data: { username, password, passwordConfirmation: password, role }
+        });
+        expect(created.status()).toBe(201);
+        accounts[username] = password;
+    }
+
+    async function continueFromPrompt(username) {
+        const context = await browser.newContext({ baseURL });
+        const accountPage = await context.newPage();
+        accountPage.on('pageerror', error => browserErrors.push(error.message));
+        await signInWithPassword(accountPage, username, accounts[username]);
+        await expect(accountPage).toHaveURL(/#mfa-onboarding$/);
+        await expect(accountPage.locator('.mfa-onboarding-intro')).toContainText('passkey or an authenticator-app code');
+        await accountPage.getByRole('button', { name: 'Continue', exact: true }).click();
+        await expect(accountPage).toHaveURL(/#account$/);
+        // Both methods are offered; neither enrollment is started for the user.
+        await expect(accountPage.getByRole('button', { name: 'Add a passkey' })).toBeFocused();
+        await expect(accountPage.getByRole('button', { name: 'Enable two-factor authentication' })).toBeVisible();
+        await expect(accountPage.locator('#passkeys-flow')).toBeHidden();
+        await expect(accountPage.locator('#two-factor-flow')).toBeHidden();
+        return { context, accountPage };
+    }
+
+    async function expectNoPromptAfterReload(accountPage) {
+        await accountPage.reload();
+        await accountPage.waitForFunction(() => window.app?.ready);
+        await accountPage.evaluate(() => window.app.ready);
+        await expect(accountPage.locator('#page-mfa-onboarding')).not.toHaveClass(/active/);
+        expect(await accountPage.evaluate(() => window.app.currentUser.mfaOnboardingPending)).toBe(false);
+    }
+
+    // Choosing a passkey uses the existing passkey enrollment.
+    const passkeyChoice = await continueFromPrompt('onboarding-passkey');
+    await addVirtualAuthenticator(passkeyChoice.accountPage);
+    await passkeyChoice.accountPage.getByRole('button', { name: 'Add a passkey' }).click();
+    await passkeyChoice.accountPage.locator('#account-passkey-name').fill('Onboarding laptop');
+    await passkeyChoice.accountPage.locator('#account-password').fill(accounts['onboarding-passkey']);
+    await passkeyChoice.accountPage.locator('#account-passkey-add-form').getByRole('button', { name: 'Continue' }).click();
+    await expect(passkeyChoice.accountPage.locator('#account-recovery-codes')).toBeVisible();
+    await passkeyChoice.accountPage.getByRole('button', { name: 'I have saved them' }).click();
+    await expect(passkeyChoice.accountPage.locator('#passkeys-status-badge')).toHaveText('1 passkey');
+    await expectNoPromptAfterReload(passkeyChoice.accountPage);
+    await passkeyChoice.context.close();
+
+    // Choosing the authenticator app uses the existing TOTP enrollment.
+    const authenticatorChoice = await continueFromPrompt('onboarding-authenticator');
+    const { accountPage } = authenticatorChoice;
+    await accountPage.getByRole('button', { name: 'Enable two-factor authentication' }).click();
+    await accountPage.locator('#account-password').fill(accounts['onboarding-authenticator']);
+    await accountPage.locator('#account-enroll-start-form').getByRole('button', { name: 'Continue' }).click();
+    await expect(accountPage.locator('#totp-qr-image')).toBeVisible();
+    const secret = await accountPage.locator('#totp-manual-secret').textContent();
+    const code = new OTPAuth.TOTP({
+        issuer: 'NodeCast TV Plus',
+        label: 'onboarding-authenticator',
+        algorithm: 'SHA1',
+        digits: 6,
+        period: 30,
+        secret: OTPAuth.Secret.fromBase32(secret)
+    }).generate();
+    await accountPage.locator('#account-confirm-code').fill(code);
+    await accountPage.getByRole('button', { name: 'Enable', exact: true }).click();
+    await expect(accountPage.locator('#account-recovery-codes')).toBeVisible();
+    await accountPage.getByRole('button', { name: 'I have saved them' }).click();
+    await expect(accountPage.locator('#two-factor-status-badge')).toHaveText('Enabled');
+    await expectNoPromptAfterReload(accountPage);
+    await authenticatorChoice.context.close();
 
     expect(browserErrors).toEqual([]);
 });
