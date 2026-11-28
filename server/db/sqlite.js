@@ -1,6 +1,8 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const { migrateCatalogueIdentities } = require('./catalogueIdentityMigration');
+const { buildHistoryRecordId } = require('../services/historyPolicy');
 
 const dataDir = process.env.NODECAST_DATA_DIR
     ? path.resolve(process.env.NODECAST_DATA_DIR)
@@ -18,10 +20,16 @@ function getDb() {
     if (!db) {
         console.log('[SQLite] Opening database at', dbPath);
         db = new Database(dbPath);
-        // Optimize performance
-        db.pragma('journal_mode = WAL');
-        db.pragma('synchronous = NORMAL');
-        initSchema();
+        try {
+            // Optimize performance
+            db.pragma('journal_mode = WAL');
+            db.pragma('synchronous = NORMAL');
+            initSchema();
+        } catch (error) {
+            db.close();
+            db = undefined;
+            throw error;
+        }
     }
     return db;
 }
@@ -32,7 +40,7 @@ function initSchema() {
     // Categories (Groups)
     db.exec(`
         CREATE TABLE IF NOT EXISTS categories (
-            id TEXT PRIMARY KEY, -- Composite key: sourceId:categoryId
+            id TEXT PRIMARY KEY, -- Composite key: sourceId:type:categoryId
             source_id INTEGER NOT NULL,
             category_id TEXT NOT NULL,
             type TEXT NOT NULL, -- 'live', 'movie', 'series'
@@ -49,7 +57,7 @@ function initSchema() {
     // Playlist Items (Channels, Movies, Series, Episodes)
     db.exec(`
         CREATE TABLE IF NOT EXISTS playlist_items (
-            id TEXT PRIMARY KEY, -- Composite key: sourceId:itemId
+            id TEXT PRIMARY KEY, -- Composite key: sourceId:type:itemId
             source_id INTEGER NOT NULL,
             item_id TEXT NOT NULL, -- Original ID from provider
             type TEXT NOT NULL, -- 'live', 'movie', 'series', 'episode'
@@ -95,6 +103,7 @@ function initSchema() {
 
     migrateLiveChannelNumbers();
     migrateStoredM3uMediaUrls();
+    migrateCatalogueIdentities(db);
 
     // EPG Programs
     // Optimized for range queries
@@ -167,7 +176,7 @@ function initSchema() {
     // Watch History (per-user)
     db.exec(`
         CREATE TABLE IF NOT EXISTS watch_history (
-            id TEXT PRIMARY KEY, -- Composite key: user_id:item_id
+            id TEXT PRIMARY KEY, -- Composite key: user_id:source_id:item_type:item_id
             user_id INTEGER NOT NULL,
             source_id INTEGER, -- Source ID for Xtream/M3U
             item_type TEXT NOT NULL, -- 'movie', 'episode'
@@ -190,7 +199,93 @@ function initSchema() {
         // Column already exists, ignore
     }
 
+    migrateWatchHistoryIdentity();
+
     console.log('[SQLite] Schema initialized');
+}
+
+function legacyHistorySourceId(data) {
+    try {
+        const sourceId = Number(JSON.parse(data || '{}').sourceId);
+        return Number.isSafeInteger(sourceId) && sourceId > 0 ? sourceId : null;
+    } catch {
+        return null;
+    }
+}
+
+// Earlier releases keyed watch history as `userId:itemId`, so a movie and an
+// episode, or the same ID from two sources, shared one record. Rekey the
+// surviving records from their stored source and type. Progress that was
+// already overwritten by another item cannot be recovered from that record.
+// The scan only matches legacy keys, so it is safe to repeat on every start,
+// including after an older release has written legacy records again.
+function migrateWatchHistoryIdentity() {
+    const legacyRows = db.prepare(`
+        SELECT id, user_id, source_id, item_type, item_id, updated_at, data
+        FROM watch_history
+        WHERE id = CAST(user_id AS TEXT) || ':' || item_id
+    `).all();
+    if (legacyRows.length === 0) return;
+
+    const findRecord = db.prepare(`
+        SELECT id, user_id, source_id, item_type, item_id, updated_at
+        FROM watch_history
+        WHERE id = ?
+    `);
+    const deleteRecord = db.prepare('DELETE FROM watch_history WHERE id = ?');
+    const rekeyRecord = db.prepare('UPDATE watch_history SET id = ?, source_id = ? WHERE id = ?');
+    const moveRecord = db.prepare('UPDATE watch_history SET id = ? WHERE id = ?');
+    // A legacy key can equal another legacy row's new key (for example item
+    // `77` and item `9001:movie:77`). Moving every legacy row aside first means
+    // no legacy key can block a destination, whatever the row order.
+    const pendingId = id => `legacy-migration\u0000${id}`;
+
+    const applyMigration = db.transaction(() => {
+        for (const row of legacyRows) moveRecord.run(pendingId(row.id), row.id);
+        let migrated = 0;
+        for (const legacyRow of legacyRows) {
+            const row = { ...legacyRow, id: pendingId(legacyRow.id) };
+            // Records saved before source_id existed kept the source only in
+            // their metadata. Resuming them saves under the sourced identity,
+            // so adopt it here instead of leaving a duplicate behind.
+            const sourceId = row.source_id ?? legacyHistorySourceId(row.data);
+            const id = buildHistoryRecordId(row.user_id, {
+                sourceId,
+                itemType: row.item_type,
+                itemId: row.item_id
+            });
+            const existing = findRecord.get(id);
+            if (existing) {
+                const sameItem = existing.user_id === row.user_id
+                    && existing.source_id === sourceId
+                    && existing.item_type === row.item_type
+                    && existing.item_id === row.item_id;
+                if (!sameItem) {
+                    // Identities are unambiguous, so this is not expected. Keep
+                    // the record under its original key rather than losing it.
+                    if (!findRecord.get(legacyRow.id)) moveRecord.run(legacyRow.id, row.id);
+                    else console.warn(`[SQLite] Could not migrate watch-history record ${legacyRow.id}`);
+                    continue;
+                }
+                // An older release wrote this item again after an upgrade.
+                // Keep whichever copy holds the latest progress.
+                if (existing.updated_at >= row.updated_at) {
+                    deleteRecord.run(row.id);
+                    migrated += 1;
+                    continue;
+                }
+                deleteRecord.run(id);
+            }
+            rekeyRecord.run(id, sourceId, row.id);
+            migrated += 1;
+        }
+        return migrated;
+    });
+
+    const migrated = applyMigration();
+    if (migrated > 0) {
+        console.log(`[SQLite] Migrated ${migrated} watch-history records to source and type identities`);
+    }
 }
 
 function migrateLiveChannelNumbers() {
