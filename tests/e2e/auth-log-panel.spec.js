@@ -371,6 +371,7 @@ test('export downloads the applied filters as JSON and reports the result', asyn
     await page.locator('#auth-log-export').click();
     await expect(page.locator('#auth-log-export-status')).toHaveText('The export failed: Too many exports. Try again shortly.');
     await expect(page.locator('#auth-log-export')).toBeEnabled();
+    expect(await page.evaluate(() => window.savedSettings), 'Exporting never saves retention settings.').toEqual([]);
 });
 
 test('the export controls fit narrow screens', async ({ page }) => {

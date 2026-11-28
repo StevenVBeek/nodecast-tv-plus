@@ -375,6 +375,11 @@ async function testServerExport() {
         assert.equal((await request(baseUrl, '/api/auth/login', { method: 'POST', jar: viewer,
             body: { username: 'viewer', password: viewerPassword } })).response.status, 200);
 
+        assert.equal((await request(baseUrl, '/api/settings', { method: 'PUT', jar: admin,
+            body: { authLogRetentionDays: 30, authLogMaxEntries: 2000 } })).response.status, 200);
+        const settingsBefore = (await request(baseUrl, '/api/settings', { jar: admin })).payload;
+        const logBefore = (await request(baseUrl, '/api/auth-log?pageSize=100', { jar: admin })).payload;
+
         const exported = await request(baseUrl, '/api/auth-log/export?outcome=failure', { jar: admin });
         assert.equal(exported.response.status, 200, JSON.stringify(exported.payload));
         assert.equal(exported.response.headers.get('cache-control'), 'no-store');
@@ -391,6 +396,14 @@ async function testServerExport() {
         for (const secret of [adminPassword, viewerPassword, wrongPassword]) {
             assert.equal(text.includes(secret), false, 'An export must not contain passwords.');
         }
+
+        // Exporting changes neither the stored entries nor the retention settings.
+        const settingsAfter = (await request(baseUrl, '/api/settings', { jar: admin })).payload;
+        assert.equal(settingsAfter.authLogRetentionDays, 30);
+        assert.equal(settingsAfter.authLogMaxEntries, 2000);
+        assert.deepEqual(settingsAfter, settingsBefore, 'An export must not change settings.');
+        assert.deepEqual((await request(baseUrl, '/api/auth-log?pageSize=100', { jar: admin })).payload, logBefore,
+            'An export must not add, change or remove entries.');
 
         const denied = await request(baseUrl, '/api/auth-log/export', { jar: viewer });
         assert.equal(denied.response.status, 403);
