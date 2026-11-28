@@ -74,8 +74,7 @@ function createRouter({ authService = auth, audit = authAudit } = {}) {
                 'X-Content-Type-Options': 'nosniff'
             });
             // The browser saves this text unchanged, so the file matches the response byte for byte.
-            res.type('json').send(`${JSON.stringify(result, null, 2)}
-`);
+            res.type('json').send(`${JSON.stringify(result, null, 2)}\n`);
         } catch (error) {
             console.error('[AuthAudit] Could not export authentication events:', error.message);
             res.status(500).json({ error: 'The sign-in log could not be exported.' });
